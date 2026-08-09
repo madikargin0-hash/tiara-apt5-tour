@@ -8739,6 +8739,154 @@ TOUR.Navigation = Navigation;
     return (a.area_label || 0) <= (b.area_label || 0) ? 1 : -1;
   }
 
+  /* ------------------------------------------------------------------ */
+  /*  шторы                                                              */
+  /*  На чертеже вдоль внутренней грани каждой остеклённой стены идёт     */
+  /*  волнистая линия из дуг — стандартный символ штор. В модели их не    */
+  /*  было, хотя материал mats.curtain давно заведён.                     */
+  /*  Тюль ведём во всю ширину проёма: он полупрозрачный и вид из окна    */
+  /*  не закрывает — а вид здесь главный аргумент цены. По краям —        */
+  /*  узкие плотные полотна, они дают вертикаль и «обжитость».            */
+  /* ------------------------------------------------------------------ */
+
+  /* Лента с волной поперёк — так ткань читается складками, а не плоскостью. */
+  function drape(cx, cz, dx, dy, nx, ny, w, y0, y1, off, amp, waves) {
+    var segs = Math.max(10, Math.round(w * 30));
+    var pos = [], uv = [], idx = [], i;
+    for (i = 0; i <= segs; i++) {
+      var t = i / segs;
+      var s = (t - 0.5) * w;
+      var a = Math.sin(t * Math.PI * 2 * waves) * amp;
+      var px = cx + dx * s + nx * (off + a);
+      var pz = cz + dy * s + ny * (off + a);
+      pos.push(px, y1, pz, px, y0, pz);
+      uv.push(t * w, 1, t * w, 0);
+    }
+    for (i = 0; i < segs; i++) {
+      var a0 = i * 2, b0 = a0 + 1, a1 = a0 + 2, b1 = a0 + 3;
+      idx.push(a0, b0, a1, b0, b1, a1);
+    }
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return g;
+  }
+
+  function buildCurtains(placed, mats, ceilH, B) {
+    var g = new THREE.Group();
+    g.name = 'curtains';
+    var sheerGeo = [], panelGeo = [], rodGeo = [];
+    var seen = {};
+
+    for (var i = 0; i < placed.length; i++) {
+      var rec = placed[i], o = rec.op;
+      if (o.type !== 'window') continue;
+      var f = rec.f;
+
+      /* Витраж набран из шести коротких сегментов дуги — вешать на каждый
+         своё полотно нельзя, получится шесть огрызков. Берём дугу одной
+         шторой по её хорде, один раз. */
+      var isVit = (o.window_type === 'vitrazh');
+      if (isVit) { if (seen.vitrazh) continue; seen.vitrazh = true; }
+
+      var cx = f.w.x1 + f.dx * rec.s, cz = f.w.y1 + f.dy * rec.s;
+      var w = isVit ? 2.6 : o.width + 0.26;
+      var top = Math.min(ceilH - 0.05, rec.top + 0.16);
+      var bot = 0.03;
+      if (top - bot < 0.6) continue;
+
+      // внутрь помещения: нормаль стены, развёрнутая к центру квартиры
+      var sgn = ((B.cx - cx) * f.nx + (B.cy - cz) * f.ny) >= 0 ? 1 : -1;
+      var nx = f.nx * sgn, ny = f.ny * sgn;
+      var off = rec.t / 2 + 0.09;
+
+      push(sheerGeo, drape(cx, cz, f.dx, f.dy, nx, ny, w, bot, top, off, 0.035, Math.max(3, w * 2.2)));
+
+      // плотные полотна по краям — по 0,34 м с каждой стороны
+      var sw = 0.34, so = (w / 2) - sw / 2 + 0.06;
+      push(panelGeo, drape(cx + f.dx * so, cz + f.dy * so, f.dx, f.dy, nx, ny, sw, bot, top, off + 0.055, 0.03, 2));
+      push(panelGeo, drape(cx - f.dx * so, cz - f.dy * so, f.dx, f.dy, nx, ny, sw, bot, top, off + 0.055, 0.03, 2));
+
+      // карниз
+      push(rodGeo, box(w + 0.16, 0.028, 0.028,
+        cx + nx * (off + 0.02), top + 0.055, cz + ny * (off + 0.02), f.ry));
+    }
+
+    /* Тюль во всю ширину при штатной плотности 0,82 закрывает вид из окна —
+       а панорамный вид тут главный аргумент цены. Берём отдельную, сильно
+       более прозрачную копию: ткань читается складками и бликом, но город
+       за стеклом остаётся виден. depthWrite off, иначе тюль срезает
+       то, что за ним. */
+    var sheerMat = mats.curtain;
+    if (sheerMat && sheerMat.clone) {
+      sheerMat = sheerMat.clone();
+      sheerMat.opacity = 0.26;
+      sheerMat.depthWrite = false;
+    }
+    var sm = meshOf(sheerGeo, sheerMat, 'curtainSheer', { cast: false, receive: false, uv: false });
+    if (sm) { sm.renderOrder = 2; g.add(sm); }
+    var pm = meshOf(panelGeo, mats.fabric || mats.curtain, 'curtainPanels', { cast: true, receive: false, uv: false });
+    if (pm) g.add(pm);
+    var rm = meshOf(rodGeo, mats.blackMetal || mats.metal, 'curtainRods', { cast: false });
+    if (rm) g.add(rm);
+    return g;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  радиаторы отопления                                                */
+  /*  По легенде листа их три типа. Правило берём с чертежа: у остекления */
+  /*  в пол ставится ВНУТРИПОЛЬНЫЙ конвектор (решётка в полу — иначе от   */
+  /*  панорамного окна тянет холодом), у окна с парапетом (тип 4) —       */
+  /*  НАПОЛЬНЫЙ прибор под подоконником.                                  */
+  /* ------------------------------------------------------------------ */
+  function buildRadiators(placed, mats, ceilH, B) {
+    var g = new THREE.Group();
+    g.name = 'radiators';
+    var wellGeo = [], grillGeo = [], panelGeo = [];
+    var seen = {};
+
+    for (var i = 0; i < placed.length; i++) {
+      var rec = placed[i], o = rec.op;
+      if (o.type !== 'window') continue;
+      var f = rec.f;
+      var isVit = (o.window_type === 'vitrazh');
+      if (isVit) { if (seen.vitrazh) continue; seen.vitrazh = true; }
+
+      var cx = f.w.x1 + f.dx * rec.s, cz = f.w.y1 + f.dy * rec.s;
+      var w = isVit ? 2.4 : Math.max(0.4, o.width - 0.12);
+      var sgn = ((B.cx - cx) * f.nx + (B.cy - cz) * f.ny) >= 0 ? 1 : -1;
+      var nx = f.nx * sgn, ny = f.ny * sgn;
+
+      if ((rec.sill || 0) > 0.35) {
+        // напольный: панель под подоконником, с зазором от пола и стены
+        var ph = Math.min(0.52, (rec.sill || 0.9) - 0.22);
+        var pOff = rec.t / 2 + 0.075;
+        push(panelGeo, box(w, ph, 0.085, cx + nx * pOff, 0.13 + ph / 2, cz + ny * pOff, f.ry));
+      } else {
+        // внутрипольный: ниша в полу вдоль остекления + решётка заподлицо
+        var d = 0.17, gOff = rec.t / 2 + d / 2 + 0.035;
+        push(wellGeo, box(w, 0.10, d, cx + nx * gOff, -0.05, cz + ny * gOff, f.ry));
+        // ламели решётки: узкие рёбра поперёк ниши
+        var n = Math.max(6, Math.round(w / 0.045));
+        for (var k = 0; k < n; k++) {
+          var s = (k / (n - 1) - 0.5) * (w - 0.03);
+          push(grillGeo, box(0.014, 0.009, d - 0.02,
+            cx + f.dx * s + nx * gOff, -0.0025, cz + f.dy * s + ny * gOff, f.ry));
+        }
+      }
+    }
+
+    var wm = meshOf(wellGeo, mats.blackMetal || mats.metal, 'radiatorWells', { cast: false, receive: false });
+    if (wm) g.add(wm);
+    var gm = meshOf(grillGeo, mats.metal, 'radiatorGrills', { cast: false, receive: false });
+    if (gm) g.add(gm);
+    var pm2 = meshOf(panelGeo, mats.metal, 'radiatorPanels', { cast: true });
+    if (pm2) g.add(pm2);
+    return g;
+  }
+
   function buildDoors(placed, mats, ceilH, rooms) {
     var g = new THREE.Group();
     g.name = 'doors';
@@ -8918,6 +9066,9 @@ TOUR.Navigation = Navigation;
         ctx.doors = buildDoors(ctx.openings, ctx.mats, ceilH, geom.rooms || []);
         scene.add(ctx.windows);
         scene.add(ctx.doors);
+        /* Радиаторы — инженерия дома: остаются и когда мебель выключена. */
+        ctx.radiators = buildRadiators(ctx.openings, ctx.mats, ceilH, B);
+        scene.add(ctx.radiators);
       }],
       ['Мебель', 0.86, function () {
         if (!TOUR.Furniture || !TOUR.Furniture.build) return;
@@ -8926,6 +9077,9 @@ TOUR.Navigation = Navigation;
         fg.name = 'furniture';
         fg.userData.furniture = true;
         scene.add(fg);
+        /* Шторы — текстиль: гаснут вместе с мебелью, поэтому внутрь её группы. */
+        var cur = buildCurtains(ctx.openings, ctx.mats, ceilH, boundsOf(geom));
+        if (cur) { fg.add(cur); ctx.curtains = cur; }
         ctx.furniture = fg;
         state.furnitureGroup = fg;
         if (TOUR.Materials.enableShadows) TOUR.Materials.enableShadows(fg, { minSize: 0.45 });
