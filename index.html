@@ -3911,239 +3911,6 @@
 
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
 </script>
-<script>/* character.js */
-/* character.js — TOUR.Character
- * Человек ростом 1,80 м для режима «от третьего лица».
- *
- * Пропорции взяты по канону 7,5 голов: голова 0,24 м (1,56–1,80),
- * плечи на 0,82 роста, тазобедренный сустав на 0,51, колено на 0,27.
- * Это то, что отличает человека от «столбика со сферой»: если голова
- * крупнее 1/7 роста, фигура сразу читается как игрушка.
- *
- * Собран как иерархия суставов (Group), поэтому шаг — это повороты,
- * а не пересборка геометрии каждый кадр.
- * Никаких ES-модулей: всё вешается на глобальный TOUR.
- */
-(function (root) {
-  'use strict';
-
-  var TOUR = root.TOUR = root.TOUR || {};
-
-  var H = 1.80;                       // полный рост
-
-  /* ключевые высоты, доли роста */
-  var Y = {
-    head:    0.936 * H,               // центр головы (1,685)
-    neck:    0.855 * H,
-    shoulder:0.812 * H,               // 1,462
-    chestTop:0.800 * H,
-    waist:   0.620 * H,
-    hip:     0.512 * H,               // 0,922
-    knee:    0.272 * H,               // 0,490
-    ankle:   0.042 * H
-  };
-
-  var SKIN   = 0xe8b596;
-  var HAIR   = 0x3a2a20;
-  var TOP    = 0x8d9aa8;              // джемпер
-  var PANTS  = 0x2f353d;
-  var SHOE   = 0x24262a;
-
-  function mat(T, hex, rough, metal) {
-    return new T.MeshStandardMaterial({
-      color: hex, roughness: rough === undefined ? 0.82 : rough,
-      metalness: metal || 0
-    });
-  }
-
-  /* конус-цилиндр между двумя радиусами; ось Y, начало в 0, растёт вниз
-     (так удобнее вешать на сустав: поворот вокруг X = мах конечности) */
-  function limb(T, m, rTop, rBot, len, seg) {
-    var g = new T.Mesh(new T.CylinderGeometry(rTop, rBot, len, seg || 10), m);
-    g.position.y = -len / 2;
-    g.castShadow = true;
-    return g;
-  }
-  function ball(T, m, r, seg) {
-    var s = new T.Mesh(new T.SphereGeometry(r, seg || 12, seg || 10), m);
-    s.castShadow = true;
-    return s;
-  }
-  function grp(T, x, y, z) {
-    var g = new T.Group();
-    g.position.set(x || 0, y || 0, z || 0);
-    return g;
-  }
-
-  function build(T) {
-    var M = {
-      skin:  mat(T, SKIN, 0.72),
-      hair:  mat(T, HAIR, 0.88),
-      top:   mat(T, TOP, 0.90),
-      pants: mat(T, PANTS, 0.88),
-      shoe:  mat(T, SHOE, 0.60)
-    };
-
-    var root3 = new T.Group();
-    root3.name = 'character';
-
-    /* --- таз: к нему крепится всё остальное --- */
-    var hips = grp(T, 0, Y.hip, 0);
-    root3.add(hips);
-
-    var pelvis = new T.Mesh(new T.CylinderGeometry(0.135, 0.115, 0.20, 12), M.pants);
-    pelvis.scale.set(1.06, 1, 0.80);
-    pelvis.position.y = 0.06;
-    pelvis.castShadow = true;
-    hips.add(pelvis);
-
-    /* --- корпус --- */
-    var torso = grp(T, 0, 0.16, 0);
-    hips.add(torso);
-
-    var chestH = Y.shoulder - Y.hip - 0.16;
-    var chest = new T.Mesh(new T.CylinderGeometry(0.155, 0.135, chestH, 14), M.top);
-    chest.scale.set(1.05, 1, 0.74);     // сечение — овал; при 0.62 сзади читалась доской
-    chest.position.y = chestH / 2;
-    chest.castShadow = true;
-    torso.add(chest);
-
-    var shoulderY = chestH;
-
-    /* --- шея и голова --- */
-    var neck = new T.Mesh(new T.CylinderGeometry(0.052, 0.058, 0.10, 10), M.skin);
-    neck.position.y = shoulderY + 0.04;
-    neck.castShadow = true;
-    torso.add(neck);
-
-    var headPivot = grp(T, 0, shoulderY + 0.10, 0);
-    torso.add(headPivot);
-
-    var head = ball(T, M.skin, 0.098, 16);
-    head.scale.set(0.92, 1.18, 1.0);    // череп вытянут, не шар
-    head.position.y = 0.115;
-    headPivot.add(head);
-
-    var hair = ball(T, M.hair, 0.101, 16);
-    hair.scale.set(0.96, 1.02, 1.04);
-    hair.position.set(0, 0.126, -0.010);
-    headPivot.add(hair);
-
-    /* --- руки --- */
-    function arm(side) {
-      var sh = grp(T, side * 0.163, shoulderY - 0.03, 0.01);
-      torso.add(sh);
-      sh.add(ball(T, M.top, 0.072, 12));
-      var upper = Y.shoulder - 0.33 * H > 0 ? 0.30 : 0.30;
-      sh.add(limb(T, M.top, 0.055, 0.045, upper));
-
-      var el = grp(T, 0, -upper, 0);
-      sh.add(el);
-      el.add(ball(T, M.top, 0.043, 10));
-      el.add(limb(T, M.skin, 0.042, 0.034, 0.26));
-
-      var wr = grp(T, 0, -0.26, 0);
-      el.add(wr);
-      var hand = ball(T, M.skin, 0.043, 10);
-      hand.scale.set(0.8, 1.15, 0.55);
-      hand.position.y = -0.035;
-      wr.add(hand);
-      return { shoulder: sh, elbow: el };
-    }
-    var armL = arm(-1), armR = arm(1);
-
-    /* --- ноги --- */
-    function leg(side) {
-      var hp = grp(T, side * 0.088, 0, 0);
-      hips.add(hp);
-      var thighL = Y.hip - Y.knee;
-      hp.add(ball(T, M.pants, 0.078, 10));
-      hp.add(limb(T, M.pants, 0.078, 0.058, thighL));
-
-      var kn = grp(T, 0, -thighL, 0);
-      hp.add(kn);
-      kn.add(ball(T, M.pants, 0.055, 10));
-      var shinL = Y.knee - Y.ankle;
-      kn.add(limb(T, M.pants, 0.055, 0.040, shinL));
-
-      var an = grp(T, 0, -shinL, 0);
-      kn.add(an);
-      var foot = new T.Mesh(new T.BoxGeometry(0.088, 0.062, 0.24), M.shoe);
-      foot.position.set(0, -0.031, 0.055);
-      foot.castShadow = true;
-      an.add(foot);
-      return { hip: hp, knee: kn, ankle: an };
-    }
-    var legL = leg(-1), legR = leg(1);
-
-    root3.traverse(function (o) { if (o.isMesh) { o.castShadow = true; o.receiveShadow = false; } });
-
-    /* ------------------------------------------------------------------ */
-    /*  анимация                                                          */
-    /* ------------------------------------------------------------------ */
-    var phase = 0;          // фаза шага, растёт от пройденного пути
-    var blend = 0;          // 0 — стоит, 1 — идёт; сглаживает переход
-    var idle = 0;
-
-    /* Фаза считается от ПУТИ, а не от времени: иначе на медленном ходу
-       ноги семенят на месте, а на быстром — скользят. */
-    var STRIDE = 0.78;      // длина шага, м
-
-    function update(dt, speed) {
-      dt = Math.min(dt, 0.1);
-      idle += dt;
-      var moving = speed > 0.05;
-      blend += ((moving ? 1 : 0) - blend) * Math.min(1, dt * 7);
-
-      if (moving) phase += (speed * dt / STRIDE) * Math.PI * 2;
-
-      var sw = Math.sin(phase), sw2 = Math.sin(phase + Math.PI);
-      var amp = 0.62 * blend;                 // размах бедра, рад
-      var breathe = Math.sin(idle * 1.5) * 0.012 * (1 - blend);
-
-      // ноги: бедро качается, колено подгибается только на выносе вперёд
-      legL.hip.rotation.x = sw * amp;
-      legR.hip.rotation.x = sw2 * amp;
-      legL.knee.rotation.x = -Math.max(0, -sw) * 1.15 * blend - 0.04;
-      legR.knee.rotation.x = -Math.max(0, -sw2) * 1.15 * blend - 0.04;
-      legL.ankle.rotation.x = -legL.knee.rotation.x * 0.35;
-      legR.ankle.rotation.x = -legR.knee.rotation.x * 0.35;
-
-      // руки — в противофазу ногам, размах меньше
-      armL.shoulder.rotation.x = sw2 * amp * 0.72;
-      armR.shoulder.rotation.x = sw * amp * 0.72;
-      armL.shoulder.rotation.z = 0.045;
-      armR.shoulder.rotation.z = -0.045;
-      armL.elbow.rotation.x = -0.20 - Math.max(0, sw2) * 0.45 * blend;
-      armR.elbow.rotation.x = -0.20 - Math.max(0, sw) * 0.45 * blend;
-
-      // корпус: лёгкий разворот плеч и вертикальное покачивание
-      torso.rotation.y = -sw * 0.06 * blend;
-      hips.rotation.y = sw * 0.05 * blend;
-      hips.position.y = Y.hip + Math.abs(Math.sin(phase)) * 0.022 * blend + breathe;
-      headPivot.rotation.x = 0.02 + breathe * 0.6;
-    }
-
-    /* Точный рост. Сумма звеньев даёт 1,78 м: макушку добавляет причёска,
-       а не скелет, поэтому подгоняем по фактическому габариту, а не «на глаз».
-       Масштаб общий, пропорции не меняются. */
-    if (T.Box3) {
-      var bb = new T.Box3().setFromObject(root3);
-      var got = bb.max.y - bb.min.y;
-      if (got > 0.5) {
-        root3.scale.setScalar(H / got);
-        /* Y.hip НЕ трогаем: он в локальных координатах группы, масштаб
-           применится к нему сам. Иначе коэффициент учтётся дважды. */
-      }
-    }
-
-    return { group: root3, update: update, height: H };
-  }
-
-  TOUR.Character = { build: build, HEIGHT: H };
-
-})(typeof window !== 'undefined' ? window : this);
-</script>
 <script>/* navigation.js */
 /* ============================================================================
    TOUR.Navigation — навигация тура по квартире (Tiara-215, кв. 5)
@@ -6036,54 +5803,35 @@ function beginWalkFlight(toRoomId) {
  * осмотре по сторонам человек крутится на месте, как флюгер. */
 var VIEW_FIRST = 'first', VIEW_THIRD = 'third';
 var view = VIEW_FIRST;
-var avatar = null;             // { group, update }
-var avatarYaw = 0;
 var THIRD_DIST = 2.55;
 var THIRD_MIN  = 0.85;
 var THIRD_UP   = 1.62;
 var THIRD_LOOK = 1.18;
 
-function ensureAvatar() {
-  if (avatar || !TOUR.Character || !THREE || !scene) return avatar;
-  avatar = TOUR.Character.build(THREE);
-  avatar.group.visible = false;
-  scene.add(avatar.group);
-  return avatar;
-}
-function hideAvatar() { if (avatar) avatar.group.visible = false; }
+/* Фигуры в кадре нет — по требованию заказчика показываем только отведённую
+   камеру. Заглушка оставлена, чтобы вызовы из setMode не разъехались. */
+function hideAvatar() {}
 
-function placeAvatar(dt, bobR) {
-  var a = ensureAvatar();
-  if (!a) {                                   // модуля нет — не ломаем обход
-    camera.position.set(walk.x, EYE_H, walk.z);
-    return;
-  }
-  a.group.visible = true;
-
-  // куда развёрнут человек: по движению, на месте — доворачиваем к камере
-  var tYaw = (walk.speed > 0.06) ? Math.atan2(walk.vx, walk.vz) : (walk.yaw + Math.PI);
-  var d = tYaw - avatarYaw;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  avatarYaw += d * Math.min(1, dt * 9);
-  a.group.position.set(walk.x, 0, walk.z);
-  a.group.rotation.y = avatarYaw;
-  a.update(dt, walk.speed);
-
+function placeThirdCamera(dt, bobR) {
   // камера: назад по взгляду и вверх, с поджатием по стенам
   var sn = Math.sin(walk.yaw), cs = Math.cos(walk.yaw);
   var bx = sn, bz = cs;                       // назад от направления взгляда
+  /* Отходим от человека НАРУЖУ мелким шагом и останавливаемся на первом
+     препятствии. Раньше искали от дальней точки к ближней и брали любую,
+     которая не внутри стены, — камера спокойно оказывалась в соседней
+     комнате, а между ней и человеком стояла перегородка.
+     Шаг 0,06 м меньше самой тонкой стены (0,10 м), перешагнуть её нельзя. */
   var want = THIRD_DIST * Math.cos(clamp(walk.pitch, -0.9, 0.9) * 0.55);
-  var dist = want, step;
-  for (step = want; step > THIRD_MIN; step -= 0.15) {
+  var dist = THIRD_MIN, step;
+  for (step = THIRD_MIN; step <= want; step += 0.06) {
     var tx = walk.x + bx * step, tz = walk.z + bz * step;
     var rr = resolve(tx, tz, 0.22);
-    if (Math.abs(rr[0] - tx) < 0.02 && Math.abs(rr[1] - tz) < 0.02) { dist = step; break; }
+    if (Math.abs(rr[0] - tx) > 0.02 || Math.abs(rr[1] - tz) > 0.02) break;
     dist = step;
   }
   var camY = THIRD_UP + Math.sin(-walk.pitch) * 1.1;
   camera.position.set(walk.x + bx * dist, Math.max(0.5, camY), walk.z + bz * dist);
-  _vTmp.set(walk.x, THIRD_LOOK, walk.z);
+  _vTmp.set(walk.x - bx * 0.9, THIRD_LOOK, walk.z - bz * 0.9);
   camera.lookAt(_vTmp);
   if (bobR) camera.rotateZ(bobR * 0.4);
 }
@@ -6145,7 +5893,7 @@ function updateWalk(dt) {
   var bobR = Math.sin(walk.bob) * 0.0045 * ratio;
 
   if (view === VIEW_THIRD) {
-    placeAvatar(dt, bobR);
+    placeThirdCamera(dt, bobR);
   } else {
     hideAvatar();
     camera.position.set(walk.x, EYE_H + bobY, walk.z);
@@ -6651,8 +6399,7 @@ var Navigation = {
     var nv = (v === VIEW_THIRD || v === 'third' || v === '3') ? VIEW_THIRD : VIEW_FIRST;
     if (nv === view) return view;
     view = nv;
-    if (view === VIEW_THIRD) { ensureAvatar(); avatarYaw = walk.yaw + Math.PI; }
-    else hideAvatar();
+    if (view !== VIEW_THIRD) hideAvatar();
     emit('view', view);
     return view;
   },
@@ -7431,6 +7178,7 @@ TOUR.Navigation = Navigation;
 
   /* --- мостики к другим модулям (мягкие, без падений) ------------------ */
   function nav() { return TOUR.Navigation || null; }
+  var paintViewLabel = function () {};   // назначается в init
   function call(obj, fn) {
     if (!obj || typeof obj[fn] !== 'function') return false;
     var args = Array.prototype.slice.call(arguments, 2);
@@ -7489,6 +7237,7 @@ TOUR.Navigation = Navigation;
 
     if (root) root.classList.toggle('is-tour', isTour);
     if (root) root.classList.toggle('mode-walk', id === 'walk');
+    if (id === 'walk') { var nv = nav(); if (nv && nv.getView) paintViewLabel(nv.getView()); }
     if (D.tour) D.tour.hidden = !isTour;
     if (D.planLab) D.planLab.classList.toggle('is-on', isPlan);
     if (D.map) D.map.classList.toggle('is-off', isPlan);
@@ -8250,7 +7999,7 @@ TOUR.Navigation = Navigation;
     /* Вид от первого / третьего лица. Подпись пишем словами:
        «от 1-го лица» покупателю понятнее, чем «FPS» или «камера». */
     D.view = $('tuiView'); D.viewSt = $('tuiViewSt');
-    function paintView(v) {
+    paintViewLabel = function paintView(v) {
       var third = (v === 'third');
       if (D.viewSt) D.viewSt.textContent = third ? 'со стороны' : 'от 1-го лица';
       if (D.view) {
@@ -8262,10 +8011,9 @@ TOUR.Navigation = Navigation;
     on(D.view, 'click', function () {
       var n = nav();
       if (!n || typeof n.toggleView !== 'function') return;
-      paintView(n.toggleView());
+      paintViewLabel(n.toggleView());
     });
-    if (TOUR.on) TOUR.on('view', paintView);
-    paintView('first');
+    paintViewLabel('first');
 
     on(D.roomsX, 'click', closeRoomsByUser);
     on(D.roomsOpenBtn, 'click', toggleRooms);
