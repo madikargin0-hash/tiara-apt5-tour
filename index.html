@@ -2699,6 +2699,197 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /*  процедурные текстуры                                               */
+  /*  Плоский цвет + roughness под мягким ровным светом читается как     */
+  /*  гипс: у дивана, керамики и камня получается одна и та же матовая   */
+  /*  поверхность. Различают материалы не столько цвет, сколько мелкая   */
+  /*  структура и то, как она ловит косой свет. Рисуем карту высот,      */
+  /*  из неё — нормаль, цвет тонируем той же структурой.                 */
+  /*  Всё считается в браузере, к весу файла не добавляет ни байта.      */
+  /* ------------------------------------------------------------------ */
+  var TEX_SIZE = 512;
+
+  function newCanvas(s) {
+    var c = root.document.createElement('canvas');
+    c.width = c.height = s;
+    return c;
+  }
+
+  /* карта высот -> карта нормалей (Собель по тору, чтобы шов не читался) */
+  function heightToNormal(T, hcan, strength) {
+    var s = hcan.width;
+    var src = hcan.getContext('2d').getImageData(0, 0, s, s).data;
+    var out = newCanvas(s), octx = out.getContext('2d');
+    var img = octx.createImageData(s, s), d = img.data;
+    function h(x, y) {
+      x = (x + s) % s; y = (y + s) % s;
+      return src[(y * s + x) * 4] / 255;
+    }
+    for (var y = 0; y < s; y++) {
+      for (var x = 0; x < s; x++) {
+        var nx = -(h(x + 1, y) - h(x - 1, y)) * strength;
+        var ny = -(h(x, y + 1) - h(x, y - 1)) * strength;
+        var l = Math.sqrt(nx * nx + ny * ny + 1);
+        var i = (y * s + x) * 4;
+        d[i] = (nx / l * 0.5 + 0.5) * 255;
+        d[i + 1] = (ny / l * 0.5 + 0.5) * 255;
+        d[i + 2] = (1 / l * 0.5 + 0.5) * 255;
+        d[i + 3] = 255;
+      }
+    }
+    octx.putImageData(img, 0, 0);
+    return out;
+  }
+
+  /* --- рисовалки карт высот; все детерминированы (seeded PRNG) -------- */
+  var HEIGHT = {
+    /* переплетение нитей: чередование основы и утка */
+    weave: function (ctx, s, rnd) {
+      var step = 3;
+      ctx.fillStyle = '#808080'; ctx.fillRect(0, 0, s, s);
+      for (var y = 0; y < s; y += step) {
+        for (var x = 0; x < s; x += step) {
+          var up = ((x / step | 0) + (y / step | 0)) % 2 === 0;
+          var v = (up ? 146 : 122) + (rnd() - 0.5) * 12;
+          ctx.fillStyle = 'rgb(' + (v | 0) + ',' + (v | 0) + ',' + (v | 0) + ')';
+          ctx.fillRect(x, y, step - 1, step - 1);
+        }
+      }
+    },
+    /* лён: неровная нить с утолщениями */
+    linen: function (ctx, s, rnd) {
+      ctx.fillStyle = '#8a8a8a'; ctx.fillRect(0, 0, s, s);
+      var i, n;
+      for (n = 0; n < 2600; n++) {
+        i = rnd() * s;
+        var len = 8 + rnd() * 26, thick = rnd() < 0.12 ? 2.2 : 1;
+        var v = 110 + rnd() * 80;
+        ctx.strokeStyle = 'rgba(' + (v | 0) + ',' + (v | 0) + ',' + (v | 0) + ',0.55)';
+        ctx.lineWidth = thick;
+        ctx.beginPath();
+        if (n % 2) { ctx.moveTo(i, rnd() * s); ctx.lineTo(i, 0); }
+        else { var yy = rnd() * s; ctx.moveTo(rnd() * s, yy); ctx.lineTo(rnd() * s + len, yy); }
+        ctx.stroke();
+      }
+    },
+    /* ворс ковра: густые короткие штрихи в разные стороны */
+    pile: function (ctx, s, rnd) {
+      ctx.fillStyle = '#787878'; ctx.fillRect(0, 0, s, s);
+      for (var n = 0; n < 9000; n++) {
+        var x = rnd() * s, y = rnd() * s, a = rnd() * Math.PI * 2, L = 2 + rnd() * 5;
+        var v = 90 + rnd() * 110;
+        ctx.strokeStyle = 'rgba(' + (v | 0) + ',' + (v | 0) + ',' + (v | 0) + ',0.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(a) * L, y + Math.sin(a) * L); ctx.stroke();
+      }
+    },
+    /* кожа: мятая ячеистая зернистость */
+    leather: function (ctx, s, rnd) {
+      ctx.fillStyle = '#8c8c8c'; ctx.fillRect(0, 0, s, s);
+      for (var n = 0; n < 1500; n++) {
+        var x = rnd() * s, y = rnd() * s, r = 2 + rnd() * 7;
+        var v = 105 + rnd() * 80;
+        var g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, 'rgba(' + (v | 0) + ',' + (v | 0) + ',' + (v | 0) + ',0.45)');
+        g.addColorStop(1, 'rgba(140,140,140,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill();
+      }
+    },
+    /* камень: слоистые прожилки */
+    marble: function (ctx, s, rnd) {
+      ctx.fillStyle = '#8f8f8f'; ctx.fillRect(0, 0, s, s);
+      for (var v = 0; v < 22; v++) {
+        var y0 = rnd() * s, amp = 8 + rnd() * 26, w = 0.6 + rnd() * 2.4;
+        ctx.strokeStyle = 'rgba(' + (120 + rnd() * 60 | 0) + ',' + (120 + rnd() * 60 | 0) + ',' + (125 + rnd() * 60 | 0) + ',0.5)';
+        ctx.lineWidth = w;
+        ctx.beginPath();
+        for (var x = 0; x <= s; x += 4) {
+          var y = y0 + Math.sin(x * 0.035 + v) * amp * 0.4 + Math.sin(x * 0.011 + v * 2) * amp;
+          if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+    },
+    /* глазурь/лак: почти гладко, лишь лёгкая волна */
+    glaze: function (ctx, s, rnd) {
+      ctx.fillStyle = '#8a8a8a'; ctx.fillRect(0, 0, s, s);
+      for (var n = 0; n < 260; n++) {
+        var x = rnd() * s, y = rnd() * s, r = 12 + rnd() * 40;
+        var g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, 'rgba(150,150,150,0.16)');
+        g.addColorStop(1, 'rgba(130,130,130,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill();
+      }
+    },
+    /* листва: пятнистость */
+    foliage: function (ctx, s, rnd) {
+      ctx.fillStyle = '#888888'; ctx.fillRect(0, 0, s, s);
+      for (var n = 0; n < 900; n++) {
+        var x = rnd() * s, y = rnd() * s, r = 3 + rnd() * 10;
+        var v = 95 + rnd() * 95;
+        ctx.fillStyle = 'rgba(' + (v | 0) + ',' + (v | 0) + ',' + (v | 0) + ',0.35)';
+        ctx.beginPath(); ctx.ellipse(x, y, r, r * 0.55, rnd() * 3.14, 0, 6.2832); ctx.fill();
+      }
+    }
+  };
+
+  /* карта высот -> цветная карта: тонируем базовым цветом,
+     амплитуду держим маленькой, иначе ткань «шумит» */
+  function tintFromHeight(hcan, hex, amount) {
+    var s = hcan.width;
+    var hd = hcan.getContext('2d').getImageData(0, 0, s, s).data;
+    var out = newCanvas(s), octx = out.getContext('2d');
+    var img = octx.createImageData(s, s), d = img.data;
+    var R = (hex >> 16) & 255, G = (hex >> 8) & 255, B = hex & 255;
+    for (var i = 0; i < d.length; i += 4) {
+      var k = 1 + ((hd[i] / 255) - 0.5) * 2 * amount;
+      d[i] = Math.max(0, Math.min(255, R * k));
+      d[i + 1] = Math.max(0, Math.min(255, G * k));
+      d[i + 2] = Math.max(0, Math.min(255, B * k));
+      d[i + 3] = 255;
+    }
+    octx.putImageData(img, 0, 0);
+    return out;
+  }
+
+  function buildTexture(T, kind, hex, opt) {
+    if (!root.document || !HEIGHT[kind]) return null;
+    var s = TEX_SIZE;
+    var hcan = newCanvas(s);
+    HEIGHT[kind](hcan.getContext('2d'), s, mulberry32(opt.seed || 7));
+    var map = new T.CanvasTexture(tintFromHeight(hcan, hex, opt.tint));
+    var nrm = new T.CanvasTexture(heightToNormal(T, hcan, opt.bump));
+    var rep = opt.repeat || 3;
+    [map, nrm].forEach(function (t) {
+      t.wrapS = t.wrapT = T.RepeatWrapping;
+      t.repeat.set(rep, rep);
+      t.anisotropy = 4;
+    });
+    if (T.sRGBEncoding !== undefined) map.encoding = T.sRGBEncoding;
+    return { map: map, normalMap: nrm, normalScale: opt.normalScale || 0.6 };
+  }
+
+  /* какой поверхности какая структура; seed фиксирован — картинка стабильна */
+  var SURFACE = {
+    fabricA: { kind: 'weave',   tint: 0.05, bump: 1.1, repeat: 9, seed: 11, normalScale: 0.30 },
+    fabricB: { kind: 'weave',   tint: 0.05, bump: 1.1, repeat: 9, seed: 12, normalScale: 0.30 },
+    fabricC: { kind: 'weave',   tint: 0.05, bump: 1.1, repeat: 9, seed: 13, normalScale: 0.30 },
+    linen:   { kind: 'linen',   tint: 0.05, bump: 1.2, repeat: 7, seed: 21, normalScale: 0.30 },
+    leather: { kind: 'leather', tint: 0.06, bump: 1.8, repeat: 6, seed: 31, normalScale: 0.45 },
+    rugA:    { kind: 'pile',    tint: 0.08, bump: 2.0, repeat: 9, seed: 41, normalScale: 0.50 },
+    rugB:    { kind: 'pile',    tint: 0.08, bump: 2.0, repeat: 9, seed: 42, normalScale: 0.50 },
+    rugKid:  { kind: 'pile',    tint: 0.08, bump: 2.0, repeat: 9, seed: 43, normalScale: 0.50 },
+    marble:  { kind: 'marble',  tint: 0.06, bump: 0.8, repeat: 2, seed: 51, normalScale: 0.18 },
+    ceramic: { kind: 'glaze',   tint: 0.02, bump: 0.5, repeat: 2, seed: 61, normalScale: 0.10 },
+    leaf:    { kind: 'foliage', tint: 0.10, bump: 1.6, repeat: 4, seed: 71, normalScale: 0.40 },
+    leafDark:{ kind: 'foliage', tint: 0.10, bump: 1.6, repeat: 4, seed: 72, normalScale: 0.40 },
+    terracotta:{kind: 'glaze',  tint: 0.05, bump: 1.2, repeat: 3, seed: 81, normalScale: 0.25 }
+  };
+
+  /* ------------------------------------------------------------------ */
   /*  палитра                                                            */
   /* ------------------------------------------------------------------ */
   var PALETTE = {
@@ -2707,24 +2898,24 @@
     walnut:    { color: 0x5f4530, roughness: 0.62, metalness: 0.0 },
     white:     { color: 0xece9e3, roughness: 0.78, metalness: 0.0 },
     offwhite:  { color: 0xdedad2, roughness: 0.82, metalness: 0.0 },
-    greyLight: { color: 0xc4c0b8, roughness: 0.80, metalness: 0.0 },
+    greyLight: { color: 0xb5b0a6, roughness: 0.80, metalness: 0.0 },
     greyDark:  { color: 0x6d6a66, roughness: 0.72, metalness: 0.0 },
     black:     { color: 0x2a2b2d, roughness: 0.55, metalness: 0.1 },
     chrome:    { color: 0xc3c7cb, roughness: 0.26, metalness: 0.85 },
     steel:     { color: 0xb7bcc0, roughness: 0.38, metalness: 0.72 },
     brass:     { color: 0xb08d57, roughness: 0.34, metalness: 0.75 },
-    fabricA:   { color: 0xd3cec3, roughness: 0.92, metalness: 0.0 },
-    fabricB:   { color: 0xa9a99f, roughness: 0.94, metalness: 0.0 },
-    fabricC:   { color: 0x7d8894, roughness: 0.94, metalness: 0.0 },
-    linen:     { color: 0xf0ede7, roughness: 0.95, metalness: 0.0 },
-    leather:   { color: 0x8a6a4f, roughness: 0.55, metalness: 0.0 },
+    fabricA:   { color: 0xb8ae9e, roughness: 0.92, metalness: 0.0 },
+    fabricB:   { color: 0x8b887c, roughness: 0.94, metalness: 0.0 },
+    fabricC:   { color: 0x63707e, roughness: 0.94, metalness: 0.0 },
+    linen:     { color: 0xe0dacd, roughness: 0.95, metalness: 0.0 },
+    leather:   { color: 0x76553d, roughness: 0.55, metalness: 0.0 },
     marble:    { color: 0xe6e4df, roughness: 0.35, metalness: 0.0 },
     ceramic:   { color: 0xf5f4f1, roughness: 0.22, metalness: 0.0 },
     screen:    { color: 0x15181c, roughness: 0.28, metalness: 0.2 },
-    rugA:      { color: 0xc9c0b0, roughness: 0.97, metalness: 0.0 },
-    rugB:      { color: 0xb2a794, roughness: 0.97, metalness: 0.0 },
-    rugKid:    { color: 0xb9c6c9, roughness: 0.97, metalness: 0.0 },
-    terracotta:{ color: 0xb1785c, roughness: 0.78, metalness: 0.0 },
+    rugA:      { color: 0xb0a48f, roughness: 0.97, metalness: 0.0 },
+    rugB:      { color: 0x98896f, roughness: 0.97, metalness: 0.0 },
+    rugKid:    { color: 0x9fb5ba, roughness: 0.97, metalness: 0.0 },
+    terracotta:{ color: 0xa66b4d, roughness: 0.78, metalness: 0.0 },
     leaf:      { color: 0x5d7a58, roughness: 0.85, metalness: 0.0 },
     leafDark:  { color: 0x47603f, roughness: 0.85, metalness: 0.0 },
     soil:      { color: 0x3e352c, roughness: 0.95, metalness: 0.0 },
@@ -2760,6 +2951,22 @@
         metalness: spec.metalness
       });
       if (spec.transparent) { m.transparent = true; m.opacity = spec.opacity; m.depthWrite = false; }
+
+      /* Структура поверхности: без неё ткань, камень и керамика под мягким
+         светом дают одинаковую матовую заливку и читаются как гипс. */
+      var srf = SURFACE[k];
+      if (srf && !spec.transparent) {
+        try {
+          var tx = buildTexture(T, srf.kind, spec.color, srf);
+          if (tx) {
+            m.map = tx.map;
+            m.normalMap = tx.normalMap;
+            if (T.Vector2) m.normalScale = new T.Vector2(tx.normalScale, tx.normalScale);
+            m.color.setHex(0xffffff);   // цвет уже запечён в карту
+            m.needsUpdate = true;
+          }
+        } catch (e) { /* нет canvas — останется ровный цвет, не критично */ }
+      }
       out[k] = m;
     }
     return out;
