@@ -5744,6 +5744,43 @@ function tourBaseYaw() {
   return yaw;
 }
 
+/* ---------------- двери: открываются при подходе ------------------------
+ * Порог входа меньше порога выхода (гистерезис): без этого дверь на границе
+ * зоны начинает дребезжать при малейшем шаге. Меряем до центра проёма,
+ * с поправкой на ширину — широкий проём «чувствует» чуть раньше.
+ * В кукольном доме и на плане двери держим приоткрытыми, как на чертеже:
+ * там зритель смотрит сверху, и распахнутые полотна только мусорят кадр. */
+var DOOR_NEAR    = 2.0;      // ближе этого — открываем
+var DOOR_FAR     = 2.9;      // дальше этого — закрываем обратно
+var DOOR_SPEED   = 3.4;      // рад/с, примерно 0.45 с на полный ход
+
+function updateDoors(dt) {
+  var list = ctx && ctx.doors && ctx.doors.userData && ctx.doors.userData.doors;
+  if (!list || !list.length || !camera) return;
+
+  var walking = (mode === MODES.WALK || mode === MODES.TOUR);
+  var px = camera.position.x, pz = camera.position.z;
+  var step = DOOR_SPEED * Math.min(dt, 0.1);
+
+  for (var i = 0; i < list.length; i++) {
+    var d = list[i];
+    if (!walking) {
+      d.target = d.ajar;
+    } else {
+      var dx = px - d.x, dz = pz - d.z;
+      var dist = Math.sqrt(dx * dx + dz * dz) - d.w * 0.35;
+      var wantOpen = (d.target === d.open) ? (dist < DOOR_FAR) : (dist < DOOR_NEAR);
+      d.target = wantOpen ? d.open : d.ajar;
+    }
+    if (d.cur !== d.target) {
+      var diff = d.target - d.cur;
+      if (Math.abs(diff) <= step) d.cur = d.target;
+      else d.cur += (diff > 0 ? step : -step);
+      d.pivot.rotation.y = d.cur;
+    }
+  }
+}
+
 function updateAnim(dt) {
   anim.t = Math.min(1, anim.t + dt / anim.dur);
   var k = easeInOut(anim.t);
@@ -6121,6 +6158,8 @@ var Navigation = {
       if (Math.abs(clipY - clipTargetY) <= 0.01) clipY = clipTargetY;
       applyClip();
     }
+
+    updateDoors(dt);            // двери реагируют на подход и во время перелётов тоже
 
     if (anim) { updateAnim(dt); return; }
 
@@ -7846,7 +7885,8 @@ TOUR.Navigation = Navigation;
     skirtT: 0.016,      // вынос плинтуса от стены
     doorLeafT: 0.042,   // толщина дверного полотна
     doorGap: 0.035,     // зазор полотна в коробке
-    doorOpen: 34,       // на сколько градусов приоткрыты двери
+    doorOpen: 34,       // на сколько градусов приоткрыты двери «в покое»
+    doorSwing: 88,      // распахнутая дверь, когда зритель подошёл вплотную
     caseW: 0.045,       // ширина наличника дверной коробки
     frameW: 0.058,      // ширина оконного профиля
     frameD: 0.072,      // глубина оконного профиля
@@ -8406,7 +8446,8 @@ TOUR.Navigation = Navigation;
   function buildDoors(placed, mats, ceilH, rooms) {
     var g = new THREE.Group();
     g.name = 'doors';
-    var caseGeo = [], leafGeo = [], handleGeo = [];
+    var caseGeo = [];
+    var doorList = [];
     var rad = Math.PI / 180;
     rooms = rooms || [];
 
@@ -8433,35 +8474,61 @@ TOUR.Navigation = Navigation;
       var right = (o.swing === 'right');
       var sgn = right ? -1 : 1;                       // с какой стороны петли
       var side = (o.type === 'entrance') ? 1 : swingSide(rooms, cx, cz, f.nx, f.ny);
-      var ang = CFG.doorOpen * rad * side * -sgn;
       var hx = cx + f.dx * sgn * (w / 2 - cw), hz = cz + f.dy * sgn * (w / 2 - cw);
 
-      // направление открытого полотна = направление стены, повёрнутое на ang
-      var bdx = f.dx * -sgn, bdy = f.dy * -sgn;
-      var ca = Math.cos(ang), sa = Math.sin(ang);
-      var odx = bdx * ca - bdy * sa, ody = bdx * sa + bdy * ca;
-      var lry = Math.atan2(-ody, odx);
+      /* Полотно живёт в собственной группе-шарнире в точке петель.
+       * Внутри группы оно лежит вдоль локального +X, поэтому открывание —
+       * это просто поворот группы вокруг Y, а не пересборка геометрии.
+       * rotation.y = θ переводит локальный +X в мир (cos θ, −sin θ),
+       * отсюда θ(a) = θ(0) − a для угла распахивания a. */
+      var bdx = f.dx * -sgn, bdy = f.dy * -sgn;       // направление закрытого полотна
+      var rotClosed = Math.atan2(-bdy, bdx);
+      var dir = side * -sgn;                          // в какую сторону распахивается
+      var rotAjar = rotClosed - CFG.doorOpen * rad * dir;
+      var rotOpen = rotClosed - CFG.doorSwing * rad * dir;
       var t = o.type === 'entrance' ? 0.058 : CFG.doorLeafT;
 
-      push(leafGeo, box(leafL, leafH, t,
-        hx + odx * leafL / 2, leafH / 2 + CFG.doorGap * 0.5,
-        hz + ody * leafL / 2, lry));
+      var pivot = new THREE.Group();
+      pivot.name = 'door_' + (o.id || i);
+      pivot.position.set(hx, 0, hz);
+      pivot.rotation.y = rotAjar;                     // как на плане, пока не подошли
 
-      // ручка
-      var hd = leafL - 0.07;
-      var hnx = -ody, hny = odx;
-      push(handleGeo, box(0.115, 0.022, 0.022,
-        hx + odx * hd + hnx * (t / 2 + 0.03), 1.05, hz + ody * hd + hny * (t / 2 + 0.03), lry));
-      push(handleGeo, box(0.115, 0.022, 0.022,
-        hx + odx * hd - hnx * (t / 2 + 0.03), 1.05, hz + ody * hd - hny * (t / 2 + 0.03), lry));
+      var leaf = new THREE.Mesh(
+        box(leafL, leafH, t, leafL / 2, leafH / 2 + CFG.doorGap * 0.5, 0, 0),
+        mats.door);
+      leaf.name = 'doorLeaf';
+      leaf.castShadow = true; leaf.receiveShadow = true;
+      leaf.userData.castShadow = true; leaf.userData.receiveShadow = true;
+      pivot.add(leaf);
+
+      // ручки — по обе стороны полотна, у свободного края
+      var hd = leafL - 0.07, hOff = t / 2 + 0.03;
+      var hg = mergeGeoms([
+        box(0.115, 0.022, 0.022, hd, 1.05, hOff, 0),
+        box(0.115, 0.022, 0.022, hd, 1.05, -hOff, 0)
+      ]);
+      if (hg) {
+        var hm1 = new THREE.Mesh(hg, mats.metal);
+        hm1.name = 'doorHandle';
+        hm1.castShadow = false; hm1.receiveShadow = false;
+        pivot.add(hm1);
+      }
+
+      g.add(pivot);
+      doorList.push({
+        pivot: pivot,
+        x: cx, z: cz,                                 // центр проёма — по нему меряем близость
+        w: w,
+        closed: rotClosed, ajar: rotAjar, open: rotOpen,
+        cur: rotAjar, target: rotAjar,
+        entrance: (o.type === 'entrance')
+      });
     }
 
     var cm = meshOf(caseGeo, mats.door, 'doorCases', { cast: true });
     if (cm) g.add(cm);
-    var lm = meshOf(leafGeo, mats.door, 'doorLeaves', { cast: true });
-    if (lm) g.add(lm);
-    var hm = meshOf(handleGeo, mats.metal, 'doorHandles', { cast: false });
-    if (hm) g.add(hm);
+    /* Список для навигации: в режиме обхода она открывает дверь при подходе. */
+    g.userData.doors = doorList;
     return g;
   }
 
